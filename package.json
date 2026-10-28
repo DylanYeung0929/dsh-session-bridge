@@ -33,9 +33,6 @@
   "engines": {
     "node": ">=20"
   },
-  "os": [
-    "darwin"
-  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

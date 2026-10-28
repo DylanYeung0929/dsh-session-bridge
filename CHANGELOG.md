@@ -14,6 +14,8 @@
   Windows `%APPDATA%`），内置 CLI 候选，`default_ports()`，JWT authority 解析，以及 Chromium cookie 解密：
   Linux v10（AES-128-CBC + PBKDF2 `peanuts`）、v11（`secret-tool`/libsecret）、Windows v10（DPAPI + AES-256-GCM）。
   加密值解不开时返回 `None`（不伪造），macOS 走明文 `value` 列。
+- `package.json` 去掉 `os: ["darwin"]` 硬门禁（否则 Linux/Windows 用户 `npm install` 直接 EBADPLATFORM，
+  与 beta 支持的声明矛盾）。
 - `dshctl` 不再硬编码 macOS 路径；`auth cookie` 选择改为遍历全部 `dsh-auth-*` 取第一个探活成功的端口。
 
 **修复**
