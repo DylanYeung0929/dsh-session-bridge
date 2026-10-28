@@ -123,11 +123,14 @@ Cookie: dsh-auth-<suffix>=v1.<payload>.<sig>
 
 | `type` | 说明 |
 |---|---|
-| `user/message` | 用户消息；文本在 `data.message.content[]`（`type:"text"`） |
-| `assistant/message` | 助手消息，结构同上 |
+| `user/message` | 用户消息；文本在 `data.content[]`（元素 `type:"text"`） |
+| `assistant/message` | 助手消息；文本在 `data.message.content[]`（**多包一层 `message`**） |
 | `tool/call` | 工具调用（`data.name` / `data.arguments`） |
 | `tool/result` | 工具结果 |
 | `turn/start` / `step/start` 等 | 生命周期事件 |
+
+两种事件的载荷**形状不对称**：只读 `data.message.content` 会静默丢掉全部用户消息（0.1.1 修复），
+`dshtool.msg_content()` 先看 `data.message.content`、再回退到 `data.content`。
 
 `dshtool.py` 只抽取 `user/message` 与 `assistant/message` 的文本，所以 App 关着也能读。
 
@@ -137,7 +140,11 @@ Cookie: dsh-auth-<suffix>=v1.<payload>.<sig>
 ~/.dsh/storages/session_projcache/sessions/<sessionId>.json
 ```
 
-路径形如 `record.rows.title.val`、`record.identity.cwd`、`record.rows.tokenUsage.val.totals`；`session.lock` 与转录 mtime 可判断「是否活跃」。
+路径形如 `record.rows.title.val`、`record.identity.cwd`、`record.rows.tokenUsage.val.totals`。
+
+`session.lock` 是给**跨客户端互斥**用的 flock：锁被持有 = 「该会话正在某个客户端里打开着」，
+**不等于** agent 正在跑（实测 23 个会话里 11 个被持有、只有 1 个 `running`）。判断是否在跑只能看 RPC 的 `running`；
+离线场景可以组合「flock 被持有 + 转录 mtime < 5 分钟」近似为「活跃」。
 
 ---
 
@@ -150,6 +157,9 @@ Cookie: dsh-auth-<suffix>=v1.<payload>.<sig>
    `runs under agent preset "standard", which the one-shot runner does not compose`。
 4. **端口漂移**：App 重启后端口可能变（例如 51413 → 51499），所以端口必须从 cookie payload 读，不要硬编码。
 5. **Cookie 会过期**：payload 有 `expiresAt`；过期后重新打开 App 或 `/?token=` 刷新即可。
+6. **`session.lock` ≠ running**：锁只表示「打开着」，见 §5。
+7. **端口不能靠"能不能连上"判断**：本机其它服务也会应答 `/`（随机端口实测返回 `404 Not found`）；
+   只认 `2xx/3xx` 或「`401/403` 且 body 含 `dsh`」（`_port_alive` 的实现）。
 
 ---
 

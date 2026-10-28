@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read and message every DeepSeek Harness (DSH) session from one CLI or from a DSH plugin — list sessions, read transcripts, send messages, and chat across sessions with a one-line per-turn menu.",
   "type": "module",
   "main": "lib/index.mjs",
@@ -15,6 +15,7 @@
     "bin",
     "lib",
     "tools",
+    "tests",
     "docs",
     "cordis.patch.yml",
     "README.md",
@@ -41,7 +42,8 @@
     }
   },
   "scripts": {
-    "test": "python3 tools/dshtool.py list >/dev/null && echo OK"
+    "test": "python3 -m unittest discover -s tests -v",
+    "check": "python3 -m py_compile tools/dshctl.py tools/dshtool.py && node --check lib/index.mjs && node --check bin/dshctl.mjs"
   },
   "license": "MIT"
 }

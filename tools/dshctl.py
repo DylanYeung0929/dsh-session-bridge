@@ -56,6 +56,11 @@ import urllib.error
 import urllib.request
 import uuid
 
+try:  # behave like a normal CLI when piped into `head`
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except (AttributeError, ValueError):
+    pass
+
 APP_DIR = os.path.expanduser("~/Library/Application Support/@deepseek-ai/dsh-desktop")
 COOKIE_DB = os.path.join(APP_DIR, "Cookies")
 DSH = "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
@@ -78,12 +83,25 @@ def _jwt_authority(cookie_value: str) -> str | None:
         return None
 
 
+DSH_HINT = b"dsh"
+
+
 def _port_alive(port: int) -> bool:
+    """True only when the port answers the way DSH itself does.
+
+    A bare HTTPError proves nothing: proxies and other local servers answer
+    whatever they like on `/` (e.g. 404 "Not found"). DSH's unauthenticated
+    root answers 401 with a "dsh web authentication required" body.
+    """
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
-        return True
-    except urllib.error.HTTPError:
-        return True
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as res:
+            return res.status < 400
+    except urllib.error.HTTPError as err:
+        try:
+            body = err.read(400).lower()
+        except Exception:
+            body = b""
+        return err.code in (401, 403) and DSH_HINT in body
     except Exception:
         return False
 
@@ -160,6 +178,8 @@ def _read_token(port: int, since: int = 0) -> str | None:
 
 def helper_start(port: int = DEFAULT_PORT, key: str | None = None) -> dict:
     state = _load_state()
+    if state.pop("key", None) is not None:
+        _save_state(state)  # scrub keys persisted by <=0.1.0, they never leave memory now
     if state.get("token") and state.get("port") == port and _port_alive(port):
         return state
     if _port_alive(port):
@@ -167,9 +187,10 @@ def helper_start(port: int = DEFAULT_PORT, key: str | None = None) -> dict:
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
     since = os.path.getsize(LOG) if os.path.exists(LOG) else 0
     env = dict(os.environ)
-    key = key or env.get("DEEPSEEK_API_KEY") or state.get("key")
+    key = key or env.get("DEEPSEEK_API_KEY")
     if not key:
-        raise SystemExit("dshctl: need DEEPSEEK_API_KEY (env or --key) for the helper")
+        raise SystemExit("dshctl: need DEEPSEEK_API_KEY (env or --key) for the helper; "
+                         "it is passed through the child env and never written to disk")
     env["DEEPSEEK_API_KEY"] = key
     with open(LOG, "ab") as out:
         proc = subprocess.Popen([DSH, "--profile", "web", "--port", str(port), "--no-open"],
@@ -186,7 +207,7 @@ def helper_start(port: int = DEFAULT_PORT, key: str | None = None) -> dict:
             raise SystemExit(f"dshctl: helper exited, see {LOG}")
     if not token:
         raise SystemExit(f"dshctl: no token in {LOG} within 30s")
-    state = {"port": port, "token": token, "pid": proc.pid, "key": key}
+    state = {"port": port, "token": token, "pid": proc.pid}
     _save_state(state)
     return state
 
@@ -256,18 +277,32 @@ def sessions(c) -> dict[str, dict]:
 
 
 def resolve(c, needle: str) -> str:
-    if needle.startswith("session-"):
-        return needle
+    """Exact id -> unique id substring -> exact title -> unique title substring.
+
+    Never guesses: an ambiguous or unknown needle aborts instead of silently
+    sending the message to the wrong conversation.
+    """
     rows = sessions(c)
-    exact = [sid for sid, row in rows.items() if row["title"] == needle]
-    if len(exact) == 1:
-        return exact[0]
-    part = [sid for sid, row in rows.items() if needle in row["title"]]
-    if len(part) == 1:
-        return part[0]
-    if len(part) > 1:
-        raise SystemExit("dshctl: ambiguous, candidates:\n" + "\n".join(
-            f"  {sid}  {rows[sid]['title']}" for sid in part))
+    if needle in rows:
+        return needle
+
+    def pick(cands: list[str], what: str) -> str | None:
+        if len(cands) == 1:
+            return cands[0]
+        if len(cands) > 1:
+            raise SystemExit(f"dshctl: ambiguous {what}, candidates:\n" + "\n".join(
+                f"  {sid}  {rows[sid]['title']}" for sid in cands))
+        return None
+
+    hit = pick([sid for sid in rows if needle in sid], "session id")
+    if hit:
+        return hit
+    hit = pick([sid for sid, row in rows.items() if row["title"] == needle], "title")
+    if hit:
+        return hit
+    hit = pick([sid for sid, row in rows.items() if needle in row["title"]], "title")
+    if hit:
+        return hit
     raise SystemExit(f"dshctl: no session matching {needle!r}")
 
 
@@ -283,11 +318,20 @@ def cmd_status(_args) -> None:
         print(f"  {'●' if row.get('running') else '○'} {row['sessionId'][:22]}  {row['title']}")
 
 
+def _row_summary(row: dict) -> dict:
+    usage = (((row.get("projections") or {}).get("values") or {}).get("tokenUsage") or {})
+    return {"sessionId": row["sessionId"], "title": row.get("title") or "",
+            "cwd": row.get("cwd"), "running": bool(row.get("running")),
+            "updatedAt": row.get("updatedAt"),
+            "outputTokens": usage.get("outputTokens")}
+
+
 def cmd_list(args) -> None:
     c = client()
     rows = sessions(c)
     if getattr(args, "json", False):
-        print(json.dumps([rows[k] for k in sorted(rows, key=lambda k: -int(rows[k].get("updatedAt") or 0))],
+        ordered = sorted(rows.values(), key=lambda r: -int(r.get("updatedAt") or 0))
+        print(json.dumps(ordered if args.full else [_row_summary(r) for r in ordered],
                          ensure_ascii=False, indent=2))
         return
     for row in sorted(rows.values(), key=lambda r: -int(r.get("updatedAt") or 0)):
@@ -347,7 +391,7 @@ def last_messages(sid: str, n: int = 1) -> list[tuple[str, str]]:
         kind = ev.get("type")
         if kind not in ("user/message", "assistant/message"):
             continue
-        text = dt.text_of(ev.get("data", {}).get("message", {}).get("content")).strip()
+        text = dt.text_of(dt.msg_content(ev.get("data", {}))).strip()
         if text:
             msgs.append(("你" if kind == "user/message" else "它", text))
     return msgs[-n:]
@@ -406,11 +450,10 @@ def cmd_chat(args) -> None:
         if line in ("4", "q", "quit", "exit", "退出", "/quit", "/exit"):
             print("已退出。")
             break
-        if line in ("", "1", "继续", "/continue"):
-            line = "" if line == "" else input("要说什么 > ").strip()
-            if not line:
-                show_menu()
-                continue
+        if line in ("1", "继续", "/continue"):
+            line = input("要说什么（直接回车=发「继续」）> ").strip() or "继续"
+        elif line == "":
+            line = "继续"  # bare Enter means "continue", as documented
         elif line in ("2", "切换", "/switch"):
             switch()
             show_menu()
@@ -484,12 +527,13 @@ def cmd_where(_args) -> None:
     print(json.dumps(f, ensure_ascii=False) if f else "当前没有进行中的跨会话对话。")
 
 
-def cmd_tail(args) -> None:
+def cmd_tail(args) -> int:
     here = os.path.dirname(os.path.abspath(__file__))
     cmd = [sys.executable, os.path.join(here, "dshtool.py"), "read", args.session, str(args.n)]
     if getattr(args, "json", False):
         cmd.append("--json")
-    subprocess.run(cmd, check=False)
+    # propagate the reader's exit code so callers can tell "ambiguous" from "empty"
+    return subprocess.run(cmd, check=False).returncode
 
 
 def cmd_raw(args) -> None:
@@ -555,7 +599,7 @@ def main() -> None:
     p.set_defaults(func=cmd_raw)
 
     args = ap.parse_args()
-    args.func(args)
+    sys.exit(args.func(args) or 0)
 
 
 if __name__ == "__main__":

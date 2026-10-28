@@ -1,10 +1,37 @@
 #!/usr/bin/env python3
 """dshtool —— 从任意会话读取/检索 DeepSeek Harness 的全部对话。"""
-import json, os, sys, glob, subprocess, time, shutil
+import fcntl, json, os, signal, sys, glob, subprocess, time
+
+try:  # behave like a normal CLI when piped into `head`
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except (AttributeError, ValueError):
+    pass
 
 HOME = os.path.expanduser("~/.dsh")
 CACHE = os.path.join(HOME, "storages/session_projcache/sessions")
 SESS = os.path.join(HOME, "sessions")
+RECENT = 300  # seconds
+
+def lock_held(path):
+    """True when a live DSH client holds this session's flock.
+
+    DSH keeps an exclusive flock on `session.lock` for every session that is
+    open in a client window —— the only offline "is anyone using this" signal.
+    Probe with a *shared* lock so a running agent's exclusive lock is never
+    disturbed; contention simply means "held".
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
 
 def sessions():
     out = []
@@ -22,9 +49,10 @@ def sessions():
         tr = transcript(sid)
         mtime = os.path.getmtime(tr) if tr else 0
         size = os.path.getsize(tr) if tr else 0
-        active = bool(tr) and (time.time() - mtime) < 300 and os.path.exists(os.path.join(os.path.dirname(tr), "session.lock"))
+        held = bool(tr) and lock_held(os.path.join(os.path.dirname(tr), "session.lock"))
         out.append(dict(id=sid, title=title, cwd=cwd, usage=usage, created=created,
-                        mtime=mtime, size=size, active=active, transcript=tr))
+                        mtime=mtime, size=size, open=held,
+                        active=held and (time.time() - mtime) < RECENT, transcript=tr))
     out.sort(key=lambda r: r["mtime"], reverse=True)
     return out
 
@@ -32,16 +60,40 @@ def transcript(sid):
     hits = glob.glob(os.path.join(SESS, "*", sid, "session.v4.jsonl.zstd"))
     return hits[0] if hits else None
 
-def resolve(key):
-    ss = sessions()
-    for r in ss:
-        if r["id"] == key or key in r["id"]:
-            return r
-    cand = [r for r in ss if key.lower() in (r["title"] or "").lower()]
-    if len(cand) == 1:
-        return cand[0]
-    if cand:
-        return cand[0]
+class AmbiguousSession(Exception):
+    """More than one session matches the needle."""
+
+    def __init__(self, key, candidates):
+        self.key = key
+        self.candidates = candidates
+        super().__init__("%d sessions match %r" % (len(candidates), key))
+
+def resolve(key, ss=None):
+    """Resolve by exact id -> unique id prefix -> exact title -> unique title.
+
+    An ambiguous needle raises AmbiguousSession instead of silently picking the
+    first hit: reading the wrong transcript is worse than failing.
+    """
+    ss = sessions() if ss is None else ss
+    exact = [r for r in ss if r["id"] == key]
+    if exact:
+        return exact[0]
+    by_id = [r for r in ss if key in r["id"]]
+    if len(by_id) == 1:
+        return by_id[0]
+    if len(by_id) > 1:
+        raise AmbiguousSession(key, by_id)
+    low = key.lower()
+    exact_title = [r for r in ss if (r["title"] or "").lower() == low]
+    if len(exact_title) == 1:
+        return exact_title[0]
+    if len(exact_title) > 1:
+        raise AmbiguousSession(key, exact_title)
+    by_title = [r for r in ss if low in (r["title"] or "").lower()]
+    if len(by_title) == 1:
+        return by_title[0]
+    if len(by_title) > 1:
+        raise AmbiguousSession(key, by_title)
     return None
 
 def iter_events(tr):
@@ -54,6 +106,15 @@ def iter_events(tr):
                 yield json.loads(line)
             except Exception:
                 continue
+
+def msg_content(data):
+    """Message payload differs per role: user/message keeps the text in
+    `data.content`, assistant/message wraps it in `data.message.content`.
+    Handle both so neither side silently disappears."""
+    msg = data.get("message")
+    if isinstance(msg, dict) and msg.get("content") is not None:
+        return msg["content"]
+    return data.get("content")
 
 def text_of(content):
     if isinstance(content, str):
@@ -69,7 +130,13 @@ def text_of(content):
     return "\n".join(p for p in parts if p)
 
 def show(key, last=0, full=False, as_json=False):
-    r = resolve(key)
+    try:
+        r = resolve(key)
+    except AmbiguousSession as exc:
+        print("会话名不唯一，请用完整 id 或更长的前缀：")
+        for row in exc.candidates:
+            print("  %-38s %s" % (row["id"], row["title"]))
+        return 2
     if not r:
         print("找不到会话:", key); return 1
     if as_json:
@@ -77,7 +144,7 @@ def show(key, last=0, full=False, as_json=False):
         for ev in iter_events(r["transcript"]):
             t = ev.get("type")
             if t in ("user/message", "assistant/message"):
-                txt = text_of(ev.get("data", {}).get("message", {}).get("content"))
+                txt = text_of(msg_content(ev.get("data", {})))
                 if txt.strip():
                     msgs.append({"role": "user" if t.startswith("user") else "assistant",
                                  "text": txt.strip()})
@@ -90,13 +157,11 @@ def show(key, last=0, full=False, as_json=False):
     for ev in iter_events(r["transcript"]):
         t = ev.get("type"); data = ev.get("data", {})
         if t == "user/message":
-            m = data.get("message", {})
-            txt = text_of(m.get("content"))
+            txt = text_of(msg_content(data))
             if txt.strip():
                 lines.append(("USER", txt.strip()))
         elif t == "assistant/message":
-            m = data.get("message", {})
-            txt = text_of(m.get("content"))
+            txt = text_of(msg_content(data))
             if txt.strip():
                 lines.append(("ASSISTANT", txt.strip()))
         elif t == "tool/call" and full:
@@ -119,7 +184,7 @@ def cmd_list(argv):
             os.path.basename(r["cwd"])[:20],
             r["size"] / 1e6,
             ((r["usage"] or {}).get("last") or {}).get("turn", "-"),
-            "● 活跃" if r["active"] else time.strftime("%m-%d %H:%M", time.localtime(r["mtime"]))))
+            "● 活跃" if r["active"] else "◐ 打开" if r["open"] else time.strftime("%m-%d %H:%M", time.localtime(r["mtime"]))))
     return 0
 
 def main():
@@ -134,6 +199,8 @@ def main():
     if a[0] == "list":
         return cmd_list(a[1:])
     if a[0] == "read":
+        if len(a) < 2:
+            print("用法: dshtool read <id前缀|标题> [N] [--full] [--json]", file=sys.stderr); return 2
         key = a[1]
         last = 0; full = False; as_json = False
         for x in a[2:]:

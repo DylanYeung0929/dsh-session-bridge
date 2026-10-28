@@ -92,7 +92,9 @@ $ ./tools/dshctl.py tail "安装插件" 1
 
 ```bash
 $ ./tools/dshctl.py chat "安装插件"
-💬 与「安装插件」聊天（回车=继续，4=退出）
+💬 会话：安装插件
+（/help 看命令；回车=继续；4=退出）
+
 你 > 你现在在等谁做什么？
 它 > 等用户在手机 App 里删掉旧网关、再扫新二维码。
 
@@ -104,7 +106,8 @@ $ ./tools/dshctl.py chat "安装插件"
 已退出。
 ```
 
-菜单刻意压成**一行**：在手机上多行选项很难点。
+菜单刻意压成**一行**：在手机上多行选项很难点。按 `1` 会再问一句「要说什么」，**直接回车就发「继续」**；
+什么都不按直接回车也等于发「继续」。
 
 ---
 
@@ -142,6 +145,10 @@ npm install /绝对路径/dsh-session-bridge
 ```
 
 编辑同目录 `package.json`，在 `dsh.profile.bundles` 里加 `"dsh-session-bridge"`，重启 DSH。
+
+> `npm install` 只装包、不登记 bundle；漏了这一步，重启后会话里不会出现 `session_*` 工具。
+> 想看自己登记上没有：`python3 -c "import json;print(json.load(open('$HOME/.dsh/profiles/desktop/package.json'))['dsh']['profile']['bundles'])"`。
+
 之后任意会话都能直接调用：
 
 ```text
@@ -154,11 +161,12 @@ session_send({ session: "安装插件", message: "把结论压成三行", wait: 
 
 ## 常见坑
 
-1. **短 id 不认**：`prompt`/`chat` 要完整 `session-<uuid>` 或唯一标题；`e3b87775` 这种前缀只有 `tail` 接受。
-2. **标题要唯一**：两个会话同名时会被拒绝，请用完整 id。
+1. **短 id 不认**：`prompt`/`chat` 要完整 `session-<uuid>` 或唯一标题；`e3b87775` 这种前缀只有 `tail`/`read` 接受。
+2. **标题 / 前缀要唯一**：命中多个会话时直接报错并列出候选（不会猜第一个），补全 id 即可。
 3. **App 重启换端口**：不用改配置，cookie payload 里有端口；`status` 会显示当前值。
 4. **desktop 专属 preset 的会话**：用 `dshctl start` 起的 helper 实例无法 compose（会报 `Unknown agent preset: computer-use`），只能直连 App。
 5. **读不到 zstd**：`brew install zstd`。
+6. **`●` 和 `◐` 不是一回事**：`●` = 在 GUI 里打开且近 5 分钟有写入，`◐` = 打开但近期没动；两者都不代表 agent 正在跑（在跑看 RPC 的 `running`）。
 
 ---
 

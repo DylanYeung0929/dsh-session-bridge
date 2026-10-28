@@ -19,6 +19,9 @@ while true; do
               "$CTL" focus "$target" ;;
     *)        target="$("$CTL" where | python3 -c 'import json,sys;print(json.load(sys.stdin)["sessionId"])')"
               "$CTL" prompt "$target" "${line:-继续}" --wait 120 >/dev/null
-              echo "它 > $("$CTL" tail "$target" 1 | tail -n +2 | head -c 800)" ;;
+              "$CTL" tail "$target" 1 --json | python3 -c '
+import json, sys
+msgs = json.load(sys.stdin)["messages"]
+print("它 > " + (msgs[-1]["text"][:800] if msgs else "(这一轮还没有文本)"))' ;;
   esac
 done

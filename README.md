@@ -46,9 +46,9 @@ DeepSeek Harness（下称 DSH）里的每个对话都是独立 agent，跑在自
 | 在 DSH 里当工具用 | `session_list` / `session_read` / `session_send` | 是 |
 
 - 纯 Python 3 标准库 + Node ≥ 20，**无第三方依赖**（读转录只额外需要 `zstd` 命令）。
-- 会话解析支持 `session-<uuid>` 全名、短前缀（仅 `tail`）或**唯一标题子串**。
+- 会话解析支持 `session-<uuid>` 全名、短前缀或**唯一标题子串**；命中多个时直接报错并列出候选，绝不悄悄选第一个（读错会话比报错更糟）。
 - `--json` 全部命令可用，方便脚本化。
-- 发消息前会打印目标会话 id + 标题，防止发错人。
+- 发消息前会打印目标会话 id + 标题，防止发错人；`list` 的 `●` = 打开且近 5 分钟有写入，`◐` = 打开但近期没动。
 
 ---
 
@@ -103,6 +103,9 @@ npm install /绝对路径/dsh-session-bridge
 
 重启 DSH 后，会话里就多了三个工具：`session_list`、`session_read`、`session_send`。
 
+> `npm install` 只装包，**不会**自动登记 bundle —— 上面那步必须做，否则重启后看不到这三个工具
+> （验证：`~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` 里要有 `dsh-session-bridge`）。
+
 > 插件只是把 CLI 包了一层，所以仍然需要 `python3` 在 PATH 里；想换解释器就设 `DSH_SESSION_BRIDGE_PYTHON=/opt/homebrew/bin/python3`。
 
 ---
@@ -129,6 +132,8 @@ npm install /绝对路径/dsh-session-bridge
 1继续 2切换 3上下文 4退出   ← 直接打字=继续
 ```
 
+按 `1`（或「继续」）会再问一句要说什么，**直接回车就发「继续」**；空行同样等于继续。
+
 ---
 
 ## CLI 参考
@@ -150,8 +155,8 @@ dshctl.py stop
 |---|---|
 | `--steer` | 打断当前正在跑的轮次，把消息插进去（默认 `queue`，排在后面） |
 | `--wait SECS` | 等该会话的轮次结束，最多 SECS 秒 |
-| `--json` | 机器可读输出 |
-| 会话选择 | `session-<uuid>` 全名 / 唯一标题子串；`tail` 也接受短前缀 |
+| `--json` | 机器可读输出（`list --json` 默认给紧凑字段，加 `--full` 给原始完整行） |
+| 会话选择 | `session-<uuid>` 全名 / 唯一短前缀 / 唯一标题子串；有歧义时报错并列出候选 |
 
 ---
 
@@ -159,7 +164,7 @@ dshctl.py stop
 
 | 工具 | 参数 | 作用 |
 |---|---|---|
-| `session_list` | `full?: boolean` | 列出全部会话（id / 标题 / cwd / running） |
+| `session_list` | `full?: boolean` | 列出全部会话；默认紧凑（id / 标题 / cwd / running / updatedAt / outputTokens），`full:true` 返回原始完整行 |
 | `session_read` | `session: string`, `count?: number` | 读该会话最近 N 条（磁盘转录） |
 | `session_send` | `session: string`, `message: string`, `steer?: boolean`, `wait?: number` | 追加消息并让该会话的 agent 跑一轮 |
 
@@ -187,7 +192,7 @@ session_send({ session: "安装插件", message: "把结论压缩成三行", wai
 
 | 输入 | 动作 |
 |---|---|
-| `1` / 任意文字 | 把文字发给当前会话；空行也等于继续 |
+| `1` / 任意文字 | 把文字发给当前会话；`1` 后再空行、或直接空行都等于发「继续」 |
 | `2` | 列出会话，选一个后切换 |
 | `3` | 打印最近 N 条上下文 |
 | `4` | 退出（`focus -`） |
@@ -212,7 +217,7 @@ session_send({ session: "安装插件", message: "把结论压缩成三行", wai
 
 ## 安全模型与红线
 
-- **凭据只在内存里用**，不写日志、不进仓库；`focus` 状态文件只存会话 id 和标题。
+- **凭据只经过内存**：helper 启动时 `DEEPSEEK_API_KEY` 只通过子进程 env 传入、**不落盘**（0.1.1 起；旧版写进 `~/.cache/dshctl.json` 的 key 会在下次 `start` 时自动清掉）。helper 自己的短期 token 存在 600 的 `~/.cache/dshctl.json` 里，供后续命令复用；`focus` 状态文件只存会话 id 和标题。
 - 所有写操作都**必须显式指名会话**；解析失败宁可不发（报 `no session matching`）。
 - 本项目作者的默认红线（你也可以写进自己的 agent 规则里）：
   - 不代转账、不代答应、不发文件/图片、不加好友/退群；
@@ -228,7 +233,8 @@ session_send({ session: "安装插件", message: "把结论压缩成三行", wai
 |---|---|---|
 | `dshctl: cannot find the DSH app cookie` | App 没开，或 Cookie 库路径不同 | 先启动 DSH 桌面 App；确认 `~/Library/Application Support/@deepseek-ai/dsh-desktop/Cookies` 存在 |
 | `connect ECONNREFUSED 127.0.0.1:51413` | 端口变了（DSH 重启会换端口） | `dshctl status` 会读 Cookie payload 里的端口；仍失败就用 `dshctl start` 起 helper |
-| `no session matching "xxx"` | 短 id 或标题不唯一 | 用完整 `session-<uuid>`，或改用唯一标题子串 |
+| `会话名不唯一` / `dshctl: ambiguous …` | 标题或前缀命中多个会话（这是有意的保护） | 按列出的候选补全 id，或改用更长的标题 |
+| `no session matching "xxx"` | 标题 / 前缀不存在 | 用完整 `session-<uuid>`，或改用唯一标题子串 |
 | `missing "_request"` / `missing "request"` | 参数名写错 | `list` 用 `_request`，`prompt` 用 `request`（见协议文档） |
 | 能读不能发 | App 在跑但会话 preset 是 desktop 专属 | 这是设计限制：helper 实例不 compose `computer-use` 之类 preset，只能直连 App |
 | `tail` 报 zstd 不存在 | 没装 zstd | `brew install zstd` |
@@ -256,6 +262,7 @@ dsh-session-bridge/
 ```bash
 python3 -m py_compile tools/dshctl.py tools/dshtool.py
 node --check lib/index.mjs
+python3 -m unittest discover -s tests -v      # 离线单测（不需要 App）
 ./tools/dshctl.py list --json | head          # 端到端可用性
 ```
 
@@ -266,7 +273,7 @@ node --check lib/index.mjs
 - [ ] Linux / Windows 的 Cookie 与端口发现
 - [ ] `dshctl watch <会话>`：实时跟随某会话输出（RPC 有 `session/follow` 流）
 - [ ] 插件里直接暴露 `session_chat`（带菜单状态机）
-- [ ] 单元测试 + CI（macOS runner）
+- [x] 单元测试 + CI（GitHub Actions：python 3.9/3.12 × ubuntu/macOS）
 
 ## License
 
