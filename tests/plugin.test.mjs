@@ -47,18 +47,19 @@ export function defineTool(options) {
   const registered = [];
   const dispose = mod.apply({ tools: { register: (tool) => { registered.push(tool); return () => {}; } } }, {});
   assert.equal(typeof dispose, "function", "apply() must return a disposer");
-  assert.deepEqual(registered.map((t) => t.name).sort(), ["session_list", "session_read", "session_send"]);
+  assert.deepEqual(registered.map((t) => t.name).sort(), ["session_chat", "session_list", "session_read", "session_send"]);
 
   const byName = Object.fromEntries(registered.map((t) => [t.name, t]));
   assert.equal(byName.session_list.parameters.full.type, "boolean");
   assert.equal(byName.session_read.parameters.session.required, true);
   assert.equal(byName.session_send.parameters.message.required, true);
+  assert.equal(byName.session_chat.parameters.action.required, true);
 
   const rendered = byName.session_list.output.render({}, []);
   assert.equal(rendered[0].type, "text");
 
   dispose();
-  console.log("plugin.test.mjs: ok — 3 tools registered, contract valid");
+  console.log("plugin.test.mjs: ok — 4 tools registered, contract valid");
 } finally {
   await rm(work, { recursive: true, force: true });
 }

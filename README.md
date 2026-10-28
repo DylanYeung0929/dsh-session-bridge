@@ -19,6 +19,7 @@ DeepSeek Harness（下称 DSH）里的每个对话都是独立 agent，跑在自
 - **可读** —— 直接读磁盘上的转录（`session.v4.jsonl.zstd`），App 关着也能读。
 - **可写** —— 通过 DSH 桌面 App 自己的本地 RPC，把消息追加进任意会话，让它自己的 agent 真的跑一轮。
 - **可聊** —— `dshctl chat` 提供一个带「每轮一行菜单」的跨会话聊天模式：`1继续 2切换 3上下文 4退出`。
+- **可跟随** —— `dshctl watch` 订阅 `session/follow` 流，别的对话吐字时你这边实时滚屏（纯标准库 WebSocket 客户端，零依赖）。
 
 ```
 ┌──────────────┐   ① list / read（读磁盘，零依赖）
@@ -43,9 +44,11 @@ DeepSeek Harness（下称 DSH）里的每个对话都是独立 agent，跑在自
 | 读某个会话最近 N 条 | `dshctl tail <会话> 20` | **否**（直接读转录） |
 | 给某个会话发消息 | `dshctl prompt <会话> "…"` | 是 |
 | 交互式跨会话聊天（带菜单） | `dshctl chat <会话>` | 是 |
+| 实时跟随某个会话 | `dshctl watch <会话>` | 是（WebSocket `session/follow`） |
+| 自检本机发现能力 | `dshctl doctor` | 否（只探测端口与 Cookie） |
 | 记住「当前在跟谁聊」 | `dshctl focus <会话>` / `where` / `focus -` | 是 |
 | 调任意 RPC 端点 | `dshctl raw <ns/method> '<json>'` | 是 |
-| 在 DSH 里当工具用 | `session_list` / `session_read` / `session_send` | 是 |
+| 在 DSH 里当工具用 | `session_list` / `session_read` / `session_send` / `session_chat` | 是 |
 
 - 纯 Python 3 标准库 + Node ≥ 20，**无第三方依赖**（读转录只额外需要 `zstd` 命令）。
 - 会话解析支持 `session-<uuid>` 全名、短前缀或**唯一标题子串**；命中多个时直接报错并列出候选，绝不悄悄选第一个（读错会话比报错更糟）。
@@ -58,9 +61,9 @@ DeepSeek Harness（下称 DSH）里的每个对话都是独立 agent，跑在自
 
 | 项 | 要求 |
 |---|---|
-| 系统 | macOS（依赖 DSH 桌面 App 的本地 RPC，路径与 Cookie 库随 App 走） |
+| 系统 | macOS（主支持）；Linux / Windows 为 **beta**：路径与 CLI 候选已覆盖，Cookie 加密值按 best-effort 解密，失败时回退到 helper 模式 |
 | DSH | 桌面 App 正在运行（`dshctl status` 能看到 `backend: app` 即可） |
-| Python | 3.9+（`python3 --version`） |
+| Python | 3.10+（`python3 --version`；类型标注用了 `X | None`） |
 | Node | ≥ 20（只有用插件/`npx` 时才需要） |
 | zstd | `brew install zstd`（只在读转录时用；`tail` / `read` 命令） |
 
@@ -103,9 +106,9 @@ npm install /绝对路径/dsh-session-bridge
 ]
 ```
 
-重启 DSH 后，会话里就多了三个工具：`session_list`、`session_read`、`session_send`。
+重启 DSH 后，会话里就多了四个工具：`session_list`、`session_read`、`session_send`、`session_chat`。
 
-> `npm install` 只装包，**不会**自动登记 bundle —— 上面那步必须做，否则重启后看不到这三个工具
+> `npm install` 只装包，**不会**自动登记 bundle —— 上面那步必须做，否则重启后看不到这四个工具
 > （验证：`~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` 里要有 `dsh-session-bridge`）。
 
 > 插件只是把 CLI 包了一层，所以仍然需要 `python3` 在 PATH 里；想换解释器就设 `DSH_SESSION_BRIDGE_PYTHON=/opt/homebrew/bin/python3`。
@@ -126,6 +129,9 @@ npm install /绝对路径/dsh-session-bridge
 
 # 4. 进入交互式跨会话聊天（每轮后给一行菜单）
 ./tools/dshctl.py chat "安装插件"
+
+# 5. 实时跟随某个会话，它吐字时你这边滚屏（Ctrl-C 退出）
+./tools/dshctl.py watch "安装插件" --lines 3
 ```
 
 `chat` 模式每轮回复后固定打印一行，在手机上也能盲打：
@@ -142,8 +148,10 @@ npm install /绝对路径/dsh-session-bridge
 
 ```
 dshctl.py status
+dshctl.py doctor [--json]           # 本机平台 / App 目录 / Cookie 库 / CLI / 活端口
 dshctl.py list [--full] [--json]
-dshctl.py tail <会话> [N] [--json]
+dshctl.py tail <会话> [N] [--json] [--full]
+dshctl.py watch <会话> [--lines N] [--no-stream] [--reasoning] [--json] [--quiet]
 dshctl.py prompt <会话> <文本> [--steer] [--wait SECS]
 dshctl.py chat <会话> [--steer] [--timeout SECS] [--context N]
 dshctl.py focus <会话> | focus -
@@ -158,6 +166,9 @@ dshctl.py stop
 | `--steer` | 打断当前正在跑的轮次，把消息插进去（默认 `queue`，排在后面） |
 | `--wait SECS` | 等该会话的轮次结束，最多 SECS 秒 |
 | `--json` | 机器可读输出（`list --json` 默认给紧凑字段，加 `--full` 给原始完整行） |
+| `--lines N` | `watch` 先回放最后 N 条（默认 5，`0` = 只跟新内容） |
+| `--no-stream` | `watch` 不跟踪半成品正文，只在消息落盘后打印 |
+| `--reasoning` | `watch` 同时打印思考增量（默认隐藏） |
 | 会话选择 | `session-<uuid>` 全名 / 唯一短前缀 / 唯一标题子串；有歧义时报错并列出候选 |
 
 ---
@@ -169,6 +180,7 @@ dshctl.py stop
 | `session_list` | `full?: boolean` | 列出全部会话；默认紧凑（id / 标题 / cwd / running / updatedAt / outputTokens），`full:true` 返回原始完整行 |
 | `session_read` | `session: string`, `count?: number` | 读该会话最近 N 条（磁盘转录） |
 | `session_send` | `session: string`, `message: string`, `steer?: boolean`, `wait?: number` | 追加消息并让该会话的 agent 跑一轮 |
+| `session_chat` | `action: string`, `session?: string`, `text?: string`, `lines?: number`, `wait?: number` | 和 CLI `chat` 共用同一个焦点状态（`~/.cache/dshctl-chat.json`）：`open` / `say` / `peek` / `close` / `status`，适合连续多轮对话 |
 
 模型侧看到的例子：
 
@@ -176,6 +188,8 @@ dshctl.py stop
 session_list({ full: true })
 session_read({ session: "安装插件", count: 6 })
 session_send({ session: "安装插件", message: "把结论压缩成三行", wait: 60 })
+session_chat({ action: "open", session: "安装插件" })
+session_chat({ action: "say", text: "把结论压缩成三行", wait: 60 })
 ```
 
 ---
@@ -248,9 +262,13 @@ session_send({ session: "安装插件", message: "把结论压缩成三行", wai
 ```
 dsh-session-bridge/
 ├── bin/dshctl.mjs          # npm bin 垫片 → tools/dshctl.py
-├── lib/index.mjs           # DSH 插件：session_list / session_read / session_send
-├── tools/dshctl.py         # CLI：本地 RPC 客户端 + 交互式 chat
+├── lib/index.mjs           # DSH 插件：session_list / session_read / session_send / session_chat
+├── tools/dshctl.py         # CLI：本地 RPC 客户端 + watch 流 + 交互式 chat
 ├── tools/dshtool.py        # 纯离线：读 zstd 转录
+├── tools/ws.py             # 纯标准库 RFC 6455 客户端（watch 用）
+├── tools/appenv.py         # 跨平台 App 目录 / Cookie 库 / CLI / 端口发现
+├── tests/                  # 离线单测 + 插件契约
+└── .github/workflows/ci.yml
 ├── cordis.patch.yml        # 插件注册声明
 ├── docs/PROTOCOL.md        # RPC 协议（逆向所得，含错误码）
 ├── docs/TUTORIAL.md        # 10 分钟教程
@@ -262,10 +280,11 @@ dsh-session-bridge/
 ## 开发与测试
 
 ```bash
-python3 -m py_compile tools/dshctl.py tools/dshtool.py
+python3 -m py_compile tools/dshctl.py tools/dshtool.py tools/ws.py tools/appenv.py
 node --check lib/index.mjs
-python3 -m unittest discover -s tests -v      # 13 个离线单测：resolve 消歧、消息提取、lock 语义
-node tests/plugin.test.mjs                    # 插件契约：stub defineTool → 断言注册 3 个工具
+python3 -m unittest discover -s tests -v      # 68 个离线单测：消息提取、resolve 消歧、lock 语义、
+                                              # 跨平台路径、AES/GCM 向量、WebSocket 帧、watch 渲染
+node tests/plugin.test.mjs                    # 插件契约：stub defineTool → 断言注册 4 个工具
 ./tools/dshctl.py list --json | head          # 端到端可用性（需要 App 在跑）
 ```
 
@@ -275,9 +294,9 @@ CI（`.github/workflows/ci.yml`）每次 push 都会跑：Python 3.10 / 3.13 × 
 
 ## Roadmap
 
-- [ ] Linux / Windows 的 Cookie 与端口发现
-- [ ] `dshctl watch <会话>`：实时跟随某会话输出（RPC 有 `session/follow` 流）
-- [ ] 插件里直接暴露 `session_chat`（带菜单状态机）
+- [x] Linux / Windows 的 Cookie 与端口发现 → `tools/appenv.py`（路径/CLI/端口全平台；Cookie 加密值是 best-effort）
+- [x] `dshctl watch <会话>`：实时跟随某会话输出（`/api/remote.mux` + `session/follow`，`tools/ws.py`）
+- [x] 插件里直接暴露 `session_chat`（与 CLI `chat` 共用焦点状态）
 - [x] 单元测试 + CI（GitHub Actions：python 3.10/3.13 × ubuntu/macOS、node 20/22）
 
 ## License
@@ -290,8 +309,8 @@ MIT © 2026 Dylan Yeung
 
 `dsh-session-bridge` lets you list, read and **message every DeepSeek Harness session** from one CLI or as a DSH plugin.
 
-- `dshctl list | tail | prompt | chat | focus | raw` — Python 3 stdlib only.
-- `session_list` / `session_read` / `session_send` — three first-party DSH tools.
+- `dshctl list | tail | watch | prompt | chat | focus | doctor | raw` — Python 3 stdlib only.
+- `session_list` / `session_read` / `session_send` / `session_chat` — four first-party DSH tools.
 - Auth = reuse the desktop app's own `dsh-auth-*` cookie; transport = local JSON-RPC at `127.0.0.1:51413`; transcripts are read straight off disk with `zstd`.
 - `chat` prints a one-line menu after every turn (`1 continue 2 switch 3 context 4 quit`) so it stays usable on a phone.
 

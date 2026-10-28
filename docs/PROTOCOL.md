@@ -148,7 +148,86 @@ Cookie: dsh-auth-<suffix>=v1.<payload>.<sig>
 
 ---
 
-## 6. 已知边界
+## 6. WebSocket 流：`session/follow`
+
+实时跟随不走 HTTP，而是走网关唯一的流多路复用 WebSocket：
+
+```
+ws://127.0.0.1:<port>/api/remote.mux
+Cookie: dsh-auth-<suffix>=v1.<payload>.<sig>
+```
+
+握手鉴权与 HTTP 同源：upgrade 时按 `Host`/`Origin` fence 与同一个 `dsh-auth-*` cookie 判定 peer，
+成功返回 `101` + 合法的 `Sec-WebSocket-Accept`。客户端帧（一行一个 JSON 文本）：
+
+```json
+{"type":"open","streamId":"<任意非空字符串>","endpoint":"session/follow","payload":{"args":{"request":{…}}}}
+{"type":"item","streamId":"…","value":{…}}
+{"type":"end","streamId":"…"}
+{"type":"cancel","streamId":"…"}
+```
+
+服务端帧：`{"type":"item","streamId","value"}`、`{"type":"end","streamId"}`、
+`{"type":"error","streamId","error":{"code","message","details"}}`。
+服务端每 2s ping 一次，连续两次无活动就 terminate —— 客户端必须回 pong（`tools/ws.py` 自动处理）。
+
+### 6.1 `session/follow` 的 request
+
+```json
+{
+  "address": {"kind": "session", "sessionId": "session-<uuid>"},
+  "assistantStream": true,
+  "maxMessages": 1
+}
+```
+
+- `address` 另一种形状是 subagent 会话：
+  `{"kind":"subagent","parentSessionId":"session-<uuid>","childSessionId":"<uuid>","mode":"one-shot|continuable|unknown"}`。
+  subagent 会话**必须**用父地址，否则报 `session/agent-busy subagent Sessions require their durable parent address`。
+- `assistantStream`（可选，`true`）：带上才有逐字增量帧。
+- `maxMessages`（可选）：限制开场 snapshot 携带的历史条数。
+- `turnWindow`（可选）：`{"minMessages":n,"minTurns":n}`，按轮次切窗。
+
+### 6.2 服务端 `value` 的三种形状
+
+1. **snapshot**（开场基线，只来一次）
+
+```json
+{"type":"snapshot","header":{…},"cursor":42,"records":[{"type":"event","event":{…}}],
+ "hasMore":false,"projections":{…},"assistantStream":{"revision":0}}
+```
+
+`cursor` 是基线最后一条事件的 `seq`；之后的 event 从 `cursor+1` 起连续。
+
+2. **event**（增量）
+
+```json
+{"type":"event","event":{"type":"user/message","seq":43,"time":1793…,"data":{…}}}
+```
+
+读取文本时注意形状差异：`user/message` 在 `data.content`，`assistant/message` 在 `data.message.content`（见 §5）。
+
+3. **assistant-stream**（仅 `assistantStream:true`）
+
+```json
+{"type":"assistant-stream","frame":{"type":"start","attemptId":"…","revision":0,"startedAfterSeq":43,"turn":7,"step":1}}
+{"type":"assistant-stream","frame":{"type":"chunk","attemptId":"…","revision":1,"index":0,"time":…,
+                                    "chunk":{"type":"text-delta","index":0,"text":"你"}}}
+{"type":"assistant-stream","frame":{"type":"end","attemptId":"…","revision":2,"index":1,
+  "outcome":{"kind":"committed","eventType":"assistant/message","seq":44}}}
+```
+
+- `chunk.type` 另有 `reasoning-delta`、`tool-call-delta`（`{index,id,name?,argumentsDelta}`）等。
+- `revision` 必须严格 `+1`，乱序或跳号会被断开（4000）。
+- `end.outcome.kind` 是 `committed`（已落盘，附 `eventType`/`seq`）或 `abandoned`（本轮作废）。
+
+`dshctl watch` 的取舍：先本地回放最后 N 条（`_recent()`），再开 `maxMessages:1` 的流；
+只打印 `seq > cursor` 的 event；若同一段正文已经通过 `assistant-stream` 逐字打印过，
+落盘的 `assistant/message` 就跳过，避免重复。
+
+---
+
+## 7. 已知边界
 
 1. **短 id 不被 RPC 接受**：`session/prompt` 必须完整 `session-<uuid>`；`session/list` 不认标题，标题解析在客户端做。
 2. **desktop 专属 preset**：`computer-use` 等 preset 只有桌面 App 能 compose。用 `dsh` helper web 实例续跑这类会话会报
@@ -163,11 +242,13 @@ Cookie: dsh-auth-<suffix>=v1.<payload>.<sig>
 
 ---
 
-## 7. 错误码速查
+## 8. 错误码速查
 
 | code | 触发场景 |
 |---|---|
 | `gateway/arguments-invalid` | args 里字段名不对（如 `missing "_request"`） |
 | `gateway/input-invalid` | 字段值不合法（枚举值、类型） |
+| `session/agent-busy` | subagent 会话未用父地址（`subagent Sessions require their durable parent address`） |
+| `session/follow` 静默断开 | WS 未回 pong（服务端 2s 一次心跳，两次无活动即 terminate） |
 | `unauthorized` / 401 | cookie 缺失或过期 |
 | `no session matching` | 客户端解析失败（非 RPC 错误） |

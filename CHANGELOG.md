@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.0 — 2026-10-29
+
+**新功能**
+- `dshctl watch <会话>`：走 `/api/remote.mux` + `session/follow` 实时跟随（`--lines/--no-stream/--reasoning/--json`），
+  落盘消息与逐字增量二选一或都要；`tools/ws.py` 是纯标准库 RFC 6455 客户端（握手校验、掩码、分片、ping/pong、32 MiB 上限）。
+- 插件新增第 4 个工具 `session_chat`：`open/say/peek/close/status`，和 `dshctl chat` 共用 `~/.cache/dshctl-chat.json` 焦点。
+- `dshctl doctor`：打印平台、App 数据目录、Cookie 库、DSH CLI、helper 状态、auth cookie 端口、活端口，排障第一步。
+- `tail --full` 透传到 `dshtool --json` 的完整事件行。
+
+**跨平台**
+- 新增 `tools/appenv.py`：Electron `userData` 三平台路径（macOS `~/Library/Application Support`、Linux `$XDG_CONFIG_HOME`、
+  Windows `%APPDATA%`），内置 CLI 候选，`default_ports()`，JWT authority 解析，以及 Chromium cookie 解密：
+  Linux v10（AES-128-CBC + PBKDF2 `peanuts`）、v11（`secret-tool`/libsecret）、Windows v10（DPAPI + AES-256-GCM）。
+  加密值解不开时返回 `None`（不伪造），macOS 走明文 `value` 列。
+- `dshctl` 不再硬编码 macOS 路径；`auth cookie` 选择改为遍历全部 `dsh-auth-*` 取第一个探活成功的端口。
+
+**修复**
+- `session/follow` 的 args 是 `{"request":{…}}`，不是扁平 `address`；subagent 会话必须用
+  `{"kind":"subagent","parentSessionId","childSessionId","mode"}` 地址（否则 `session/agent-busy`）。
+- 开场 snapshot 的 `cursor` 用作去重基线，只打印 `seq > cursor` 的事件；`object.__init__` 空正文不再输出空行。
+- `doctor` 的 `live ports` 原先只看 `default_ports()`，现在并入 cookie 里的端口。
+
+**测试 / CI**
+- `tests/`：68 个离线单测（消息提取、resolve 消歧、lock 语义、跨平台路径、AES/GCM 向量、WebSocket 帧、watch 渲染、插件契约）。
+- `.github/workflows/ci.yml`：python 3.10/3.13 × ubuntu/macOS，`py_compile` 覆盖 `ws.py`/`appenv.py`；node 20/22。
+
+---
+
 ## 0.1.1 — 2026-10-28
 
 **修复**

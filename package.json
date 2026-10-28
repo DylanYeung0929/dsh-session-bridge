@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Read and message every DeepSeek Harness (DSH) session from one CLI or from a DSH plugin — list sessions, read transcripts, send messages, and chat across sessions with a one-line per-turn menu.",
   "type": "module",
   "main": "lib/index.mjs",

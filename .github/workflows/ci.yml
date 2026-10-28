@@ -26,7 +26,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Byte-compile the CLI (syntax gate)
-        run: python -m py_compile tools/dshctl.py tools/dshtool.py
+        run: python -m py_compile tools/dshctl.py tools/dshtool.py tools/ws.py tools/appenv.py
 
       - name: Unit tests (offline, no DSH required)
         run: python -m unittest discover -s tests -v

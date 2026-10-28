@@ -34,7 +34,9 @@ Commands
   dshctl.py chat <session>                interactive chat, with a menu after each turn
   dshctl.py focus <session> | focus -     remember / leave the session we are chatting with
   dshctl.py where                         show that remembered session
-  dshctl.py tail <session> [N]            read the transcript from local files
+  dshctl.py tail <session> [N] [--full]   read the transcript from local files
+  dshctl.py watch <session> [--lines N]   follow it live over the gateway stream
+  dshctl.py doctor                        what this machine's discovery can see
   dshctl.py raw <endpoint> '<json args>'  call any endpoint directly
   dshctl.py start|stop [--port N] [--key KEY]   manage the helper fallback
 """
@@ -42,13 +44,12 @@ Commands
 from __future__ import annotations
 
 import argparse
-import base64
 import http.cookiejar
 import json
 import os
 import re
+import shutil
 import signal
-import sqlite3
 import subprocess
 import sys
 import time
@@ -61,9 +62,19 @@ try:  # behave like a normal CLI when piped into `head`
 except (AttributeError, ValueError):
     pass
 
-APP_DIR = os.path.expanduser("~/Library/Application Support/@deepseek-ai/dsh-desktop")
-COOKIE_DB = os.path.join(APP_DIR, "Cookies")
-DSH = "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+def _load_appenv():
+    """Local sibling module: cross-platform paths, cookie store, CLI lookup."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import appenv
+    return appenv
+
+
+_ENV = _load_appenv()
+APP_DIR = _ENV.app_data_dir()
+COOKIE_DB = _ENV.cookie_db_path()
+DSH = _ENV.dsh_cli_candidates()[0]
 HOME = os.path.expanduser("~")
 STATE = os.path.join(HOME, ".cache", "dshctl.json")
 LOG = os.path.join(HOME, ".cache", "dshctl.log")
@@ -73,16 +84,6 @@ DEFAULT_PORT = 51499
 # --------------------------------------------------------------------------- #
 # backend: live desktop app
 # --------------------------------------------------------------------------- #
-def _jwt_authority(cookie_value: str) -> str | None:
-    """'v1.<b64url payload>.<sig>' -> '127.0.0.1:51413'."""
-    try:
-        payload = cookie_value.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload)).get("authority")
-    except Exception:
-        return None
-
-
 DSH_HINT = b"dsh"
 
 
@@ -108,21 +109,40 @@ def _port_alive(port: int) -> bool:
 
 def app_cookie() -> tuple[str, str, int]:
     """Newest GUI cookie whose authority points at a live local port."""
-    if not os.path.exists(COOKIE_DB):
-        raise RuntimeError("no desktop cookie store")
-    con = sqlite3.connect(f"file:{COOKIE_DB}?immutable=1", uri=True)
-    try:
-        rows = con.execute(
-            "select name, value from cookies where host_key='127.0.0.1' "
-            "and name like 'dsh-auth%' and length(value) > 20 "
-            "order by expires_utc desc limit 20").fetchall()
-    finally:
-        con.close()
-    for name, value in rows:
-        port = (_jwt_authority(value) or "").rsplit(":", 1)[-1]
-        if port.isdigit() and _port_alive(int(port)):
-            return name, value, int(port)
+    for name, value, port in _ENV.read_auth_cookies(COOKIE_DB):
+        if _port_alive(port):
+            return name, value, port
     raise RuntimeError("no live dsh-auth cookie (is the app running?)")
+
+
+def dsh_cli() -> str:
+    """The bundled `dsh` binary (or a PATH one) for the helper backend."""
+    for candidate in _ENV.dsh_cli_candidates():
+        if os.path.exists(candidate):
+            return candidate
+        found = shutil.which(candidate)
+        if found:
+            return found
+    raise SystemExit("dshctl: cannot find the dsh CLI; install the desktop app "
+                     "or pass --port/--key to reuse a running helper")
+
+
+def cmd_doctor(_args) -> None:
+    """Print what this machine offers, and why discovery may fail."""
+    rows = {
+        "platform": _ENV.platform_id(),
+        "app data": APP_DIR,
+        "cookie db": COOKIE_DB,
+        "cookie db exists": os.path.exists(COOKIE_DB),
+        "dsh CLI": next((c for c in _ENV.dsh_cli_candidates()
+                         if os.path.exists(c) or shutil.which(c)), None),
+        "helper state": STATE if os.path.exists(STATE) else None,
+    }
+    cookies = _ENV.read_auth_cookies(COOKIE_DB)
+    rows["auth cookies"] = [{"name": n, "port": p} for n, _v, p in cookies]
+    candidates = [p for _n, _v, p in cookies] + _ENV.default_ports()
+    rows["live ports"] = sorted({p for p in candidates if _port_alive(p)})
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
 class AppClient:
@@ -193,7 +213,7 @@ def helper_start(port: int = DEFAULT_PORT, key: str | None = None) -> dict:
                          "it is passed through the child env and never written to disk")
     env["DEEPSEEK_API_KEY"] = key
     with open(LOG, "ab") as out:
-        proc = subprocess.Popen([DSH, "--profile", "web", "--port", str(port), "--no-open"],
+        proc = subprocess.Popen([dsh_cli(), "--profile", "web", "--port", str(port), "--no-open"],
                                 stdout=out, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, start_new_session=True,
                                 env=env, cwd="/tmp")
@@ -516,8 +536,13 @@ def cmd_focus(args) -> None:
         print("已退出跨会话对话。")
         return
     c = client()
+    row = sessions(c)
     sid = resolve(c, args.session)
-    title = sessions(c).get(sid, {}).get("title") or sid
+    try:
+        _row = row.get(sid, {})
+    except TypeError:  # very old rows without session ids map cleanly anyway
+        _row = {}
+    title = _row.get("title") or sid
     focus_write({"sessionId": sid, "title": title, "at": int(time.time())})
     print(f"已进入：{title}\n（后续消息会发给它；`dshctl.py focus -` 退出）")
 
@@ -532,8 +557,172 @@ def cmd_tail(args) -> int:
     cmd = [sys.executable, os.path.join(here, "dshtool.py"), "read", args.session, str(args.n)]
     if getattr(args, "json", False):
         cmd.append("--json")
+    if getattr(args, "full", False):
+        cmd.append("--full")
     # propagate the reader's exit code so callers can tell "ambiguous" from "empty"
     return subprocess.run(cmd, check=False).returncode
+
+
+ROLE = {"user/message": "你", "assistant/message": "它"}
+
+
+def _cookie_header(c) -> str:
+    """Cookie header value that authenticates the WebSocket upgrade."""
+    if getattr(c, "backend", "") == "app":
+        return f"{c.name}={c.value}"
+    return "; ".join(f"{ck.name}={ck.value}" for ck in c.jar)
+
+
+def _recent(sid: str, n: int) -> list[tuple[str, str]]:
+    """Last n user/assistant messages from the local transcript (offline)."""
+    if n <= 0:
+        return []
+    dt = _load_dshtool()
+    tr = dt.transcript(sid)
+    if not tr:
+        return []
+    msgs = []
+    for ev in dt.iter_events(tr):
+        if ev.get("type") in ROLE:
+            text = dt.text_of(dt.msg_content(ev.get("data") or "")).strip()
+            if text:
+                msgs.append((ev["type"], text))
+    return msgs[-n:]
+
+
+def _on_stream(frame: dict, args, state: dict) -> None:
+    """Render `assistant-stream` frames: partial text while the turn runs."""
+    kind = frame.get("type")
+    if kind == "start":
+        if not state["prefix"]:
+            sys.stdout.write("\n它 > ")
+            sys.stdout.flush()
+            state["prefix"] = True
+        return
+    if kind == "chunk":
+        chunk = frame.get("chunk") or {}
+        ctype = chunk.get("type")
+        if ctype == "text-delta":
+            text = chunk.get("text") or ""
+            if text:
+                if not state["prefix"]:
+                    sys.stdout.write("\n它 > ")
+                state["prefix"] = True
+                state["streamed"] = True
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        elif ctype == "reasoning-delta" and getattr(args, "reasoning", False):
+            text = chunk.get("text") or ""
+            if text:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        return
+    if kind == "end" and (state["prefix"] or state["streamed"]):
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        state["prefix"] = False
+        state["streamed"] = False
+
+
+def cmd_watch(args) -> int:
+    """Follow one session live over the gateway `session/follow` stream.
+
+    The gateway multiplexes every stream over one WebSocket at
+    `/api/remote.mux`; the cookie that authenticates HTTP also authenticates
+    the upgrade. Frames are `{type:open|item|end|cancel|error}`.
+    """
+    c = client()
+    rows = sessions(c)
+    sid = resolve(c, args.session)
+    row = rows.get(sid, {})
+    title = row.get("title") or sid
+
+    # Subagent sessions are addressable only through their durable parent.
+    if row.get("origin") == "subagent" and row.get("parentSessionId"):
+        mode = (((row.get("projections") or {}).get("values") or {})
+                .get("subagent") or {}).get("mode") or "unknown"
+        address = {"kind": "subagent", "parentSessionId": row["parentSessionId"],
+                   "childSessionId": sid, "mode": mode}
+    else:
+        address = {"kind": "session", "sessionId": sid}
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import ws  # local sibling module: stdlib WebSocket client
+
+    try:
+        sock = ws.connect(f"ws://127.0.0.1:{c.port}/api/remote.mux",
+                          headers={"Cookie": _cookie_header(c)}, timeout=10)
+    except Exception as exc:
+        raise SystemExit(f"dshctl: cannot follow {title!r}: {exc}")
+
+    # session/follow takes one `request` object: the opening snapshot is capped
+    # to one message (we print the local tail ourselves) and events must carry
+    # seq greater than the snapshot cursor.
+    request = {"address": address, "maxMessages": 1}
+    if not args.no_stream:
+        request["assistantStream"] = True
+    ask = {"request": request}
+    stream_id = uuid.uuid4().hex
+    sock.send_text(json.dumps({"type": "open", "streamId": stream_id,
+                               "endpoint": "session/follow",
+                               "payload": {"args": ask}}))
+
+    if not args.quiet:
+        print(f"👀 跟随 {title}（Ctrl-C 退出）", flush=True)
+        for role, text in _recent(sid, args.lines):
+            print(f"\n{ROLE[role]} > {text}", flush=True)
+
+    state = {"streamed": False, "prefix": False, "cursor": 0}
+    try:
+        while True:
+            try:
+                raw = sock.recv_text()
+            except ws.ConnectionClosed:
+                if not args.quiet:
+                    print("\n(连接已断开)", flush=True)
+                return 0
+            if args.json:
+                print(raw, flush=True)
+                continue
+            try:
+                frame = json.loads(raw)
+            except ValueError:
+                continue
+            if frame.get("type") == "error":
+                err = frame.get("error") or {}
+                raise SystemExit(f"dshctl: follow failed: {err.get('code')} {err.get('message')}")
+            if frame.get("type") != "item":
+                continue
+            value = frame.get("value") or {}
+            kind = value.get("type")
+            if kind == "snapshot":
+                state["cursor"] = int(value.get("cursor") or 0)
+                continue
+            if kind == "assistant-stream":
+                _on_stream(value.get("frame") or {}, args, state)
+            elif kind == "event":
+                ev = value.get("event") or {}
+                role = ROLE.get(ev.get("type"))
+                if not role or int(ev.get("seq") or 0) <= state.get("cursor", 0):
+                    continue
+                if state["streamed"]:  # already printed by the live stream
+                    state["streamed"] = False
+                    state["prefix"] = False
+                    continue
+                data = ev.get("data") or {}
+                text = _load_dshtool().text_of(_load_dshtool().msg_content(data))
+                print(f"\n{role} > {text}", flush=True)
+    except KeyboardInterrupt:
+        if not args.quiet:
+            print("\n👋 已停止跟随", flush=True)
+        return 0
+    finally:
+        try:
+            sock.send_text(json.dumps({"type": "cancel", "streamId": stream_id}))
+        except Exception:
+            pass
+        sock.close()
 
 
 def cmd_raw(args) -> None:
@@ -561,6 +750,7 @@ def main() -> None:
     p.set_defaults(func=cmd_start)
     sub.add_parser("stop").set_defaults(func=cmd_stop)
     sub.add_parser("status").set_defaults(func=cmd_status)
+    sub.add_parser("doctor", help="diagnose app/cookie/CLI discovery").set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("list")
     p.add_argument("--full", action="store_true")
@@ -591,7 +781,19 @@ def main() -> None:
     p.add_argument("session")
     p.add_argument("n", nargs="?", type=int, default=12)
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--full", action="store_true", help="include tool calls")
     p.set_defaults(func=cmd_tail)
+
+    p = sub.add_parser("watch", help="follow a session live (new messages appear as they happen)")
+    p.add_argument("session", help="session-<uuid> or a title substring")
+    p.add_argument("--lines", type=int, default=5, metavar="N",
+                   help="show the last N messages before following (0 = none)")
+    p.add_argument("--no-stream", action="store_true",
+                   help="do not follow partial assistant text")
+    p.add_argument("--reasoning", action="store_true", help="also print reasoning deltas")
+    p.add_argument("--json", action="store_true", help="print raw stream frames")
+    p.add_argument("--quiet", action="store_true", help="no banner, no history")
+    p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("raw")
     p.add_argument("endpoint")

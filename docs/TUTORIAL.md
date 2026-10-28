@@ -64,6 +64,25 @@ $ ./tools/dshctl.py tail "安装插件" 6 --json
 
 ---
 
+## 第 2.5 步：实时跟随一个会话
+
+不想反复 `tail`，就 subscribe 它的实时流：
+
+```bash
+$ ./tools/dshctl.py watch "安装插件" --lines 3
+👀 跟随 安装插件（Ctrl-C 退出）
+
+你 > 你那边插件装得怎么样了？
+它 > 插件侧已完成…
+它 > 正在补测试…       ← 落盘一条就打印一条
+```
+
+- 默认同时打印「半成品」逐字增量（`assistant-stream`）；嫌吵加 `--no-stream`，只在消息落盘后打印。
+- 想看思考过程加 `--reasoning`；`--json` 输出原始帧，方便自己解析。
+- subagent 会话会自动用父会话地址跟随，不用手动传。
+
+---
+
 ## 第 3 步：给那个会话发一句话
 
 ```bash
@@ -155,6 +174,8 @@ npm install /绝对路径/dsh-session-bridge
 session_list({ full: true })
 session_read({ session: "安装插件", count: 6 })
 session_send({ session: "安装插件", message: "把结论压成三行", wait: 60 })
+session_chat({ action: "open", session: "安装插件" })   // 后续可连续 say / peek
+session_chat({ action: "say", text: "把结论压成三行", wait: 60 })
 ```
 
 ---
@@ -166,7 +187,8 @@ session_send({ session: "安装插件", message: "把结论压成三行", wait: 
 3. **App 重启换端口**：不用改配置，cookie payload 里有端口；`status` 会显示当前值。
 4. **desktop 专属 preset 的会话**：用 `dshctl start` 起的 helper 实例无法 compose（会报 `Unknown agent preset: computer-use`），只能直连 App。
 5. **读不到 zstd**：`brew install zstd`。
-6. **`●` 和 `◐` 不是一回事**：`●` = 在 GUI 里打开且近 5 分钟有写入，`◐` = 打开但近期没动；两者都不代表 agent 正在跑（在跑看 RPC 的 `running`）。
+6. **`watch` 一直在等新事件**：它是跟随流，不会自己退出；`Ctrl-C` 结束，`--lines 0` 只看新内容。
+7. **`●` 和 `◐` 不是一回事**：`●` = 在 GUI 里打开且近 5 分钟有写入，`◐` = 打开但近期没动；两者都不代表 agent 正在跑（在跑看 RPC 的 `running`）。
 
 ---
 
