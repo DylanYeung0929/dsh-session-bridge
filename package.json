@@ -14,11 +14,15 @@
   "files": [
     "bin",
     "lib",
-    "tools",
-    "tests",
-    "docs",
+    "tools/*.py",
+    "tests/*.py",
+    "tests/*.mjs",
+    "docs/PROTOCOL.md",
+    "docs/TUTORIAL.md",
+    "docs/PROMO.md",
     "cordis.patch.yml",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [

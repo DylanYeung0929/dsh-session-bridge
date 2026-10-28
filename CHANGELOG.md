@@ -16,6 +16,7 @@
   加密值解不开时返回 `None`（不伪造），macOS 走明文 `value` 列。
 - npm 包名改为 `@dylanyeung/dsh-session-bridge`（不带 scope 的 `dsh-session-bridge` 已被其他作者占用，
   仓库名不变；`cordis.patch.yml`、README、教程、CI 断言同步）。
+- npm 包里不再夹带 `__pycache__/*.pyc`（`files` 只留 `tools/*.py`、`tests/*.py|mjs`），0.2.0 包体 132 kB → 56 kB。
 - `package.json` 去掉 `os: ["darwin"]` 硬门禁（否则 Linux/Windows 用户 `npm install` 直接 EBADPLATFORM，
   与 beta 支持的声明矛盾）。
 - `dshctl` 不再硬编码 macOS 路径；`auth cookie` 选择改为遍历全部 `dsh-auth-*` 取第一个探活成功的端口。
