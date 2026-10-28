@@ -163,7 +163,9 @@ cd ~/.dsh/profiles/desktop
 npm install /绝对路径/dsh-session-bridge
 ```
 
-编辑同目录 `package.json`，在 `dsh.profile.bundles` 里加 `"dsh-session-bridge"`，重启 DSH。
+编辑同目录 `package.json`，在 `dsh.profile.bundles` 里加 `"@dylanyeung/dsh-session-bridge"`，重启 DSH。
+
+> 发布到 npm 之后也可以直接 `npm install @dylanyeung/dsh-session-bridge`（同样要手动登记 bundle）。
 
 > `npm install` 只装包、不登记 bundle；漏了这一步，重启后会话里不会出现 `session_*` 工具。
 > 想看自己登记上没有：`python3 -c "import json;print(json.load(open('$HOME/.dsh/profiles/desktop/package.json'))['dsh']['profile']['bundles'])"`。

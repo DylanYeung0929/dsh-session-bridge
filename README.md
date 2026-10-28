@@ -102,14 +102,22 @@ npm install /绝对路径/dsh-session-bridge
 ```json
 "bundles": [
   "...",
-  "dsh-session-bridge"
+  "@dylanyeung/dsh-session-bridge"
 ]
 ```
 
 重启 DSH 后，会话里就多了四个工具：`session_list`、`session_read`、`session_send`、`session_chat`。
 
 > `npm install` 只装包，**不会**自动登记 bundle —— 上面那步必须做，否则重启后看不到这四个工具
-> （验证：`~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` 里要有 `dsh-session-bridge`）。
+> （验证：`~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` 里要有 `@dylanyeung/dsh-session-bridge`）。
+
+发布到 npm 之后，也可以直接：
+
+```bash
+cd ~/.dsh/profiles/desktop && npm install @dylanyeung/dsh-session-bridge
+```
+
+> 仓库名仍叫 `dsh-session-bridge`；npm 包名带 scope，因为不带 scope 的同名包已被另一个作者占用。
 
 > 插件只是把 CLI 包了一层，所以仍然需要 `python3` 在 PATH 里；想换解释器就设 `DSH_SESSION_BRIDGE_PYTHON=/opt/homebrew/bin/python3`。
 
