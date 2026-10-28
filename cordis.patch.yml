@@ -1,0 +1,4 @@
+- insert:
+    - id: session-bridge
+      # Must be the published package name — the loader imports this specifier.
+      name: dsh-session-bridge
