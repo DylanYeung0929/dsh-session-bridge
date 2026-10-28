@@ -1,5 +1,7 @@
 # dsh-session-bridge
 
+[![CI](https://github.com/DylanYeung0929/dsh-session-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/DylanYeung0929/dsh-session-bridge/actions/workflows/ci.yml)
+
 > **One CLI (and one DSH plugin) to read, list and message every DeepSeek Harness conversation.**
 > 在终端或任意 DSH 会话里，查看 / 读取 / 给**所有 DeepSeek Harness 对话**发消息。
 
@@ -262,9 +264,12 @@ dsh-session-bridge/
 ```bash
 python3 -m py_compile tools/dshctl.py tools/dshtool.py
 node --check lib/index.mjs
-python3 -m unittest discover -s tests -v      # 离线单测（不需要 App）
-./tools/dshctl.py list --json | head          # 端到端可用性
+python3 -m unittest discover -s tests -v      # 13 个离线单测：resolve 消歧、消息提取、lock 语义
+node tests/plugin.test.mjs                    # 插件契约：stub defineTool → 断言注册 3 个工具
+./tools/dshctl.py list --json | head          # 端到端可用性（需要 App 在跑）
 ```
+
+CI 配置放在 `ci/github-actions.yml`（需要时复制到 `.github/workflows/ci.yml` 即启用——若你的 GitHub PAT 没有 workflow scope，直接推 workflow 文件会被拒）。启用后每次 push 会跑：Python 3.10 / 3.13 × ubuntu / macOS（语法闸 + 单测 + CLI 冒烟 + 文档文件存在性）、Node 20 / 22（package.json 契约 + 插件注册测试 + cordis patch 形状）。全部离线，不需要 DeepSeek Harness 或任何凭据。
 
 本项目是在实际使用中逆向出来的，边界条件都记在 `docs/PROTOCOL.md`；欢迎提 issue / PR 补平台支持（Windows、纯 headless 无 App 场景）。
 
@@ -273,7 +278,7 @@ python3 -m unittest discover -s tests -v      # 离线单测（不需要 App）
 - [ ] Linux / Windows 的 Cookie 与端口发现
 - [ ] `dshctl watch <会话>`：实时跟随某会话输出（RPC 有 `session/follow` 流）
 - [ ] 插件里直接暴露 `session_chat`（带菜单状态机）
-- [x] 单元测试 + CI（GitHub Actions：python 3.9/3.12 × ubuntu/macOS）
+- [x] 单元测试 + CI（GitHub Actions：python 3.10/3.13 × ubuntu/macOS、node 20/22）
 
 ## License
 
