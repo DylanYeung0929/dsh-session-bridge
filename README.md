@@ -269,7 +269,7 @@ node tests/plugin.test.mjs                    # 插件契约：stub defineTool �
 ./tools/dshctl.py list --json | head          # 端到端可用性（需要 App 在跑）
 ```
 
-CI 配置放在 `ci/github-actions.yml`（需要时复制到 `.github/workflows/ci.yml` 即启用——若你的 GitHub PAT 没有 workflow scope，直接推 workflow 文件会被拒）。启用后每次 push 会跑：Python 3.10 / 3.13 × ubuntu / macOS（语法闸 + 单测 + CLI 冒烟 + 文档文件存在性）、Node 20 / 22（package.json 契约 + 插件注册测试 + cordis patch 形状）。全部离线，不需要 DeepSeek Harness 或任何凭据。
+CI（`.github/workflows/ci.yml`）每次 push 都会跑：Python 3.10 / 3.13 × ubuntu / macOS（语法闸 + 单测 + CLI 冒烟 + 文档文件存在性）、Node 20 / 22（package.json 契约 + 插件注册测试 + cordis patch 形状）。全部离线，不需要 DeepSeek Harness 或任何凭据。
 
 本项目是在实际使用中逆向出来的，边界条件都记在 `docs/PROTOCOL.md`；欢迎提 issue / PR 补平台支持（Windows、纯 headless 无 App 场景）。
 

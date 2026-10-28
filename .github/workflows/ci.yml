@@ -1,7 +1,3 @@
-# GitHub Actions 配置（可选启用）
-# OpenAI/企业账号的 PAT 若没有 workflow scope，无法直接 push 到 .github/workflows/。
-# 想启用 CI：把本文件复制到 .github/workflows/ci.yml 再提交（网页端上传亦可）。
-
 name: CI
 
 on:
