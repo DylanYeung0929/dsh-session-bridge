@@ -239,6 +239,32 @@ session_chat({ action: "say", text: "把结论压缩成三行", wait: 60 })
 
 ---
 
+## 和 DSH 原生 `session_search` 的关系
+
+DSH 自带一个**实验性** bundle `@deepseek-ai/dsh-experimental-session-search`，里面的
+`dsh-tool-session-query` 注册了五个**只读**工具：
+
+| 原生工具 | 能做什么 |
+|---|---|
+| `session_search` | 在**当前 workspace** 的历史会话里做全文检索 |
+| `session_event_search` / `session_event_read` | 按事件类型/序号/时间读某几个会话的事件 |
+| `session_trace` / `session_event_trace` | 顺着 turn/step/子代理关系追一条链路 |
+
+它默认**不启用**：既不在 `@deepseek-ai/dsh-base`，也不在 desktop profile 的
+`dsh.profile.bundles` 里，要用得自己把这个 bundle 加进 profile。
+
+所以两边的关系是：
+
+- **重叠**：让 agent 回顾/检索以前的会话内容——原生这五个工具就够了，本插件不多做事。
+- **原生没有**：`dshctl list` 这种带 running/打开状态的会话清单；往**任意一个既有会话**里发 prompt；
+  `watch` 的实时流式跟随；`chat` 的跨会话轮次状态机；以及不依赖宿主进程、能在 cron/脚本里跑的 CLI。
+- 原生确实有 `send_message` / `spawn_teammate`，但那是发给 **Agent Team 里自己 spawn 的 teammate**，
+  不是 workspace 里已经存在的任意会话。
+
+一句话：只想"翻旧账"用原生；要"给别的会话派活、盯活、脚本化"，才需要这个插件。
+
+---
+
 ## 安全模型与红线
 
 - **凭据只经过内存**：helper 启动时 `DEEPSEEK_API_KEY` 只通过子进程 env 传入、**不落盘**（0.1.1 起；旧版写进 `~/.cache/dshctl.json` 的 key 会在下次 `start` 时自动清掉）。helper 自己的短期 token 存在 600 的 `~/.cache/dshctl.json` 里，供后续命令复用；`focus` 状态文件只存会话 id 和标题。

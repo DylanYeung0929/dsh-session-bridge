@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- README 新增「和 DSH 原生 `session_search` 的关系」：原生是只读的历史检索（实验性 bundle，
+  默认不开），写消息/实时跟随/会话清单/脱离宿主的 CLI 仍由本插件提供。
+
 ## 0.2.0 — 2026-10-29
 
 **新功能**
